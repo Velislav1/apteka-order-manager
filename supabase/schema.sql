@@ -5,11 +5,16 @@
 -- Сигурност: никой не пише директно в таблиците. Всяка промяна минава през
 -- функциите долу, които проверяват ролята (главен / помощник / служител).
 -- Само „главен“ мести заявките – точно като в старата версия.
+-- Нов потребител не вижда нищо, докато Главният не го одобри.
 
 -- ---------- Таблици ----------
-create table if not exists public.app_roles (
-  user_id uuid primary key references auth.users(id) on delete cascade,
-  role    text not null check (role in ('glaven', 'pomoshtnik', 'sluzhitel'))
+-- Потребители: всеки си прави име и парола сам; Главният го одобрява и му дава роля.
+-- role = null → чака одобрение (не вижда нищо).
+create table if not exists public.app_users (
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  name       text not null,
+  role       text check (role in ('glaven', 'pomoshtnik', 'sluzhitel')),
+  created_at timestamptz not null default now()
 );
 
 create table if not exists public.requests (
@@ -50,23 +55,68 @@ create or replace view public.requests_v with (security_invoker = true) as
   from public.requests r;
 
 -- ---------- Права ----------
-alter table public.app_roles enable row level security;
+alter table public.app_users enable row level security;
 alter table public.requests  enable row level security;
 alter table public.history   enable row level security;
 
 create or replace function public.my_role() returns text
   language sql stable security definer set search_path = public as
-$$ select role from public.app_roles where user_id = auth.uid() $$;
+$$ select role from public.app_users where user_id = auth.uid() $$;
+create or replace function public.my_name() returns text
+  language sql stable security definer set search_path = public as
+$$ select name from public.app_users where user_id = auth.uid() $$;
 
-drop policy if exists "read own role" on public.app_roles;
-create policy "read own role" on public.app_roles for select to authenticated using (user_id = auth.uid());
+drop policy if exists "read users" on public.app_users;
+create policy "read users" on public.app_users for select to authenticated
+  using (user_id = auth.uid() or public.my_role() = 'glaven');
 drop policy if exists "pharmacy reads requests" on public.requests;
 create policy "pharmacy reads requests" on public.requests for select to authenticated using (public.my_role() is not null);
 drop policy if exists "pharmacy reads history" on public.history;
 create policy "pharmacy reads history" on public.history for select to authenticated using (public.my_role() is not null);
 
-revoke all on public.app_roles, public.requests, public.history, public.requests_v from anon, authenticated;
-grant select on public.app_roles, public.requests, public.history, public.requests_v to authenticated;
+revoke all on public.app_users, public.requests, public.history, public.requests_v from anon, authenticated;
+grant select on public.app_users, public.requests, public.history, public.requests_v to authenticated;
+
+-- Нов потребител (от бутона „Нов потребител“) → ред в app_users.
+-- Най-първият потребител става Главен автоматично; всички следващи чакат одобрение.
+create or replace function public._on_new_user() returns trigger
+  language plpgsql security definer set search_path = public as
+$$
+begin
+  insert into public.app_users (user_id, name, role)
+  values (new.id, left(btrim(coalesce(new.raw_user_meta_data->>'name', new.email)), 40),
+          case when not exists (select 1 from public.app_users where role = 'glaven') then 'glaven' end);
+  return new;
+end $$;
+drop trigger if exists apteka_on_new_user on auth.users;
+create trigger apteka_on_new_user after insert on auth.users for each row execute function public._on_new_user();
+
+-- Главният одобрява / сменя роля / премахва.
+create or replace function public.set_user_role(p_user uuid, p_role text) returns void
+  language plpgsql security definer set search_path = public as
+$$
+begin
+  if my_role() is distinct from 'glaven' then raise exception 'Само главният управлява потребителите.'; end if;
+  if p_role is not null and p_role not in ('glaven', 'pomoshtnik', 'sluzhitel') then raise exception 'Невалидна роля.'; end if;
+  if coalesce(p_role, '') <> 'glaven' and (select role from app_users where user_id = p_user) = 'glaven'
+     and (select count(*) from app_users where role = 'glaven') = 1 then
+    raise exception 'Трябва да остане поне един Главен.';
+  end if;
+  update app_users set role = p_role where user_id = p_user;
+end $$;
+
+create or replace function public.remove_user(p_user uuid) returns void
+  language plpgsql security definer set search_path = public as
+$$
+begin
+  if my_role() is distinct from 'glaven' then raise exception 'Само главният управлява потребителите.'; end if;
+  if p_user = auth.uid() then raise exception 'Не можете да премахнете себе си.'; end if;
+  delete from app_users where user_id = p_user;
+  begin
+    delete from auth.users where id = p_user; -- освобождава името за нова регистрация
+  exception when others then null;
+  end;
+end $$;
 
 -- Живи известия (новите заявки излизат веднага на всички компютри).
 do $$ begin
@@ -94,14 +144,14 @@ create or replace function public.create_request(p jsonb) returns jsonb
   language plpgsql security definer set search_path = public as
 $$
 declare
-  v_by text := _clean(p->>'by', 60);
+  v_by text := my_name();
   v_patient text := _clean(p->>'patient', 120);
   v_medicine text := _clean(p->>'medicine', 300);
   v_id bigint;
 begin
   if my_role() is null then raise exception 'Нямате достъп.'; end if;
   if v_patient = '' or v_medicine = '' then raise exception 'Попълнете пациент и лекарство.'; end if;
-  if v_by = '' then raise exception 'Въведете вашето име.'; end if;
+  if v_by is null then raise exception 'Нямате достъп.'; end if;
   insert into requests (date, patient, phone, medicine, qty, note, nzok_code, nzok_name, nzok_qty, nzok_note, created_by, updated_by)
   values (case when _is_date(p->>'date') then p->>'date' else _today() end, v_patient, _clean(p->>'phone', 40),
           v_medicine, _clean(p->>'qty', 40), _clean(p->>'note', 500),
@@ -119,7 +169,7 @@ create or replace function public.set_status(p_id bigint, p jsonb) returns jsonb
 $$
 declare
   r requests;
-  v_by text := _clean(p->>'by', 60);
+  v_by text := my_name();
   v_status text;
   v_expected text;
   v_comment text := _clean(p->>'comment', 500);
@@ -133,7 +183,7 @@ begin
   v_expected := case when not (p ? 'expected') then r.expected
                      when _is_date(p->>'expected') then p->>'expected' else '' end;
   if v_status not in ('new', 'ordered', 'arrived', 'done', 'unavailable') then raise exception 'Невалиден статус.'; end if;
-  if v_by = '' then raise exception 'Въведете вашето име.'; end if;
+  if v_by is null then raise exception 'Нямате достъп.'; end if;
   v_changes := v_status <> r.status or v_expected <> r.expected;
   if not v_changes and v_comment = '' then raise exception 'Няма промяна.'; end if;
   if v_changes and my_role() <> 'glaven' then
@@ -155,13 +205,13 @@ $$
 declare
   r requests;
   n requests;
-  v_by text := _clean(p->>'by', 60);
+  v_by text := my_name();
   ch text[] := '{}';
 begin
   if my_role() is null then raise exception 'Нямате достъп.'; end if;
   select * into r from requests where id = p_id for update;
   if not found then raise exception 'Няма такава заявка.'; end if;
-  if v_by = '' then raise exception 'Въведете вашето име.'; end if;
+  if v_by is null then raise exception 'Нямате достъп.'; end if;
   n := r;
   n.patient := _clean(p->>'patient', 120);
   n.medicine := _clean(p->>'medicine', 300);
@@ -227,7 +277,9 @@ begin
   return added;
 end $$;
 
-revoke all on function public.my_role(), public.create_request(jsonb), public.set_status(bigint, jsonb),
-  public.edit_request(bigint, jsonb), public.import_legacy(jsonb), public._row(bigint) from public, anon;
-grant execute on function public.my_role(), public.create_request(jsonb), public.set_status(bigint, jsonb),
-  public.edit_request(bigint, jsonb), public.import_legacy(jsonb) to authenticated;
+revoke all on function public.my_role(), public.my_name(), public.create_request(jsonb), public.set_status(bigint, jsonb),
+  public.edit_request(bigint, jsonb), public.import_legacy(jsonb), public._row(bigint),
+  public.set_user_role(uuid, text), public.remove_user(uuid), public._on_new_user() from public, anon, authenticated;
+grant execute on function public.my_role(), public.my_name(), public.create_request(jsonb), public.set_status(bigint, jsonb),
+  public.edit_request(bigint, jsonb), public.import_legacy(jsonb), public.set_user_role(uuid, text), public.remove_user(uuid)
+  to authenticated;

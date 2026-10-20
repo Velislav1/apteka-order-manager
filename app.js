@@ -1,21 +1,28 @@
 // Apteka Order Manager – облачна версия.
 // Данните са в Supabase (Франкфурт), затова всеки компютър работи сам –
-// няма значение дали главният е включен. Ролята идва от страницата
-// (glaven/, pomoshtnik/, sluzhitel/) и от паролата, въведена веднъж на компютъра.
+// няма значение дали главният е включен. Всеки служител си прави име и парола;
+// ролята (Главен / Помощник / Служител) му я дава Главният при одобрението.
 
 const SUPABASE_URL = 'https://kwftohuxtwxxzwhtwwht.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_ovO5h9qCKeHaoGEBAVfImQ_ZyOOfkdS'; // публичен ключ – защитата е в базата (RLS)
 
 const ROLES = {
-  glaven:     { email: 'glaven@apteka-zayavki.app',     label: '🛒 Поръчващ',          name: 'Главен' },
-  pomoshtnik: { email: 'pomoshtnik@apteka-zayavki.app', label: '📋 Помощник поръчващ', name: 'Помощник поръчващ' },
-  sluzhitel:  { email: 'sluzhitel@apteka-zayavki.app',  label: '👀 Служител',          name: 'Служител' },
+  glaven:     { label: '🛒 Поръчващ',          name: 'Главен' },
+  pomoshtnik: { label: '📋 Помощник поръчващ', name: 'Помощник поръчващ' },
+  sluzhitel:  { label: '👀 Служител',          name: 'Служител' },
 };
-const ROLE = ROLES[window.ROLE] ? window.ROLE : 'sluzhitel';
+let ROLE = null;
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { storageKey: `apteka-${ROLE}`, persistSession: true, autoRefreshToken: true },
+  auth: { storageKey: 'apteka', persistSession: true, autoRefreshToken: true },
 });
+
+// Supabase иска имейл – правим скрит „имейл“ от името (на кирилица), потребителят вижда само името.
+async function nameToEmail(name) {
+  const bytes = new TextEncoder().encode(name.trim().toLowerCase());
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return 'u' + [...new Uint8Array(hash)].slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('') + '@apteka-zayavki.app';
+}
 
 // ---------- Разметка ----------
 document.body.insertAdjacentHTML('afterbegin', `
@@ -25,8 +32,9 @@ document.body.insertAdjacentHTML('afterbegin', `
   <span class="pill"><span id="conn" class="dot"></span><span id="connText">Свързване…</span></span>
   <span class="grow"></span>
   <button class="pill install" id="installBtn" hidden>📥 Инсталирай на този компютър</button>
-  <button class="pill" id="role" title="Изход от този компютър"></button>
-  <button class="pill" id="meBtn" title="Смяна на името">👤 <span id="meName"></span></button>
+  <button class="pill" id="usersBtn" hidden>👥 Потребители <span id="usersCount"></span></button>
+  <span class="pill" id="role"></span>
+  <button class="pill" id="meBtn" title="Изход / смяна на потребител">👤 <span id="meName"></span></button>
 </header>
 
 <main>
@@ -104,24 +112,38 @@ document.body.insertAdjacentHTML('afterbegin', `
 
 <dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
 
-<dialog id="nameDlg">
-  <form class="dlg" id="nameForm" method="dialog">
-    <h3>👋 Как се казвате?</h3>
-    <p class="muted" style="margin-top:0">Името се записва към заявките, които въвеждате и променяте. Пита се само веднъж на този компютър.</p>
-    <input id="nameInput" maxlength="60" required placeholder="напр. Мария" autocomplete="off">
-    <footer><button class="btn primary" type="submit">Готово</button></footer>
+<dialog id="loginDlg">
+  <form class="dlg" id="loginForm">
+    <h3>💊 Apteka Order Manager</h3>
+    <div class="tabs" id="authTabs" style="margin-bottom:6px">
+      <button type="button" data-m="login" class="on">Вход</button>
+      <button type="button" data-m="register">Нов потребител</button>
+    </div>
+    <p class="muted" id="authHint">Въведете вашето име и парола.</p>
+    <label class="f" style="margin-top:0">Име</label>
+    <input id="loginName" maxlength="40" required autocomplete="username" placeholder="напр. Мария">
+    <label class="f">Парола</label>
+    <input id="loginPass" type="password" required minlength="6" autocomplete="current-password" placeholder="поне 6 знака">
+    <div id="pass2Box" hidden>
+      <label class="f">Повторете паролата</label>
+      <input id="loginPass2" type="password" minlength="6" autocomplete="new-password">
+    </div>
+    <div id="loginMsg" class="msg"></div>
+    <footer><button class="btn primary" type="submit" id="loginBtn">Вход</button></footer>
   </form>
 </dialog>
 
-<dialog id="loginDlg">
-  <form class="dlg" id="loginForm">
-    <h3>🔒 ${ROLES[ROLE].label}</h3>
-    <p class="muted">Първо пускане на този компютър. Въведете паролата за роля „${ROLES[ROLE].name}“.
-      Пита се само веднъж.</p>
-    <input id="loginPass" type="password" required autocomplete="current-password" placeholder="Парола">
-    <div id="loginMsg" class="msg"></div>
-    <footer><button class="btn primary" type="submit">Вход</button></footer>
-  </form>
+<dialog id="waitDlg">
+  <div class="dlg">
+    <h3>⏳ Чака одобрение</h3>
+    <p class="muted" style="margin-top:0">Потребителят <b id="waitName"></b> е създаден. Поръчващият (Главен) трябва да го одобри
+      от бутона „👥 Потребители“. После натиснете „Провери пак“.</p>
+    <div id="waitMsg" class="msg"></div>
+    <footer>
+      <button class="btn" type="button" id="waitOut">Изход</button>
+      <button class="btn primary" type="button" id="waitAgain">Провери пак</button>
+    </footer>
+  </div>
 </dialog>
 
 <input type="file" id="importFile" accept=".json,application/json" hidden>
@@ -138,8 +160,8 @@ const COLUMNS = [
   ['ordered', 'Поръчани', 'чакат доставка'],
   ['arrived', 'Пристигнали', 'обадете се на клиента'],
 ];
-const isOrderer = ROLE === 'glaven';
-const canSeeBoard = ROLE !== 'sluzhitel';
+let isOrderer = false;
+let canSeeBoard = false;
 let requests = [];
 let view = 'board';
 let allFilter = 'all';
@@ -212,18 +234,14 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-// ---------- Име на служителя ----------
+// ---------- Потребител (името идва от акаунта) ----------
 let myName = '';
-try { myName = localStorage.getItem('me') || ''; } catch {}
-function showName() { $('#meName').textContent = myName || 'Въведете име'; }
-function askName() { $('#nameInput').value = myName; $('#nameDlg').showModal(); $('#nameInput').focus(); }
-$('#nameForm').addEventListener('submit', () => {
-  myName = $('#nameInput').value.trim();
-  try { localStorage.setItem('me', myName); } catch {}
-  showName();
-});
-$('#meBtn').onclick = askName;
-const needName = () => { if (myName) return false; askName(); return true; };
+const needName = () => false;
+$('#meBtn').onclick = async () => {
+  if (!confirm(`Изход на „${myName}“? (напр. за да влезе друг служител)`)) return;
+  await sb.auth.signOut();
+  location.reload();
+};
 
 // ---------- Нова заявка ----------
 const form = $('#newForm');
@@ -235,7 +253,6 @@ form.addEventListener('submit', async e => {
   const msg = $('#formMsg');
   const body = Object.fromEntries(new FormData(form));
   if (!$('#nzokCheck').checked) { delete body.nzok_code; delete body.nzok_name; delete body.nzok_qty; delete body.nzok_note; }
-  body.by = myName;
   const btn = form.querySelector('[type=submit]');
   btn.disabled = true;
   try {
@@ -666,33 +683,135 @@ addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = 
 addEventListener('appinstalled', () => { $('#installBtn').hidden = true; toast('✓ Инсталирано – иконата е на работния плот'); });
 $('#installBtn').onclick = async () => { if (!installEvt) return; installEvt.prompt(); await installEvt.userChoice; installEvt = null; $('#installBtn').hidden = true; };
 
-// ---------- Вход (веднъж на компютър) ----------
+// ---------- Потребители (само Главният) ----------
+async function loadUsers() {
+  const { data } = await sb.from('app_users').select('*').order('created_at');
+  const users = data || [];
+  const waiting = users.filter(u => !u.role).length;
+  $('#usersCount').textContent = waiting ? `(${waiting} чака)` : '';
+  return users;
+}
+async function openUsers() {
+  const users = await loadUsers();
+  const opts = u => '<option value="">⏳ Чака одобрение</option>' + Object.entries(ROLES)
+    .map(([k, v]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('');
+  $('#dlgBody').innerHTML = `
+    <h3 tabindex="-1" autofocus>👥 Потребители</h3>
+    <p class="muted" style="margin-top:-6px">Нов служител си прави име и парола сам, после тук му избирате роля.</p>
+    <table><tbody>${users.map(u => `
+      <tr data-u="${u.user_id}">
+        <td><b>${esc(u.name)}</b><div class="muted">от ${fmtDate(ymd(new Date(u.created_at)))}</div></td>
+        <td><select data-role>${opts(u)}</select></td>
+        <td>${u.name === myName ? '' : '<button class="btn" data-del title="Премахни">✕</button>'}</td>
+      </tr>`).join('')}</tbody></table>
+    <div id="uMsg" class="msg"></div>
+    <footer><button class="btn primary" type="button" id="uClose">Готово</button></footer>`;
+  $('#dlgBody').onchange = async e => {
+    const sel = e.target.closest('[data-role]'); if (!sel) return;
+    const uid = sel.closest('tr').dataset.u;
+    try { await rpc('set_user_role', { p_user: uid, p_role: sel.value || null }); toast('Записано'); loadUsers(); }
+    catch (err) { await openUsers(); $('#uMsg').className = 'msg err'; $('#uMsg').textContent = err.message; }
+  };
+  $('#dlgBody').onclick = async e => {
+    if (e.target.id === 'uClose') return $('#dlg').close();
+    const del = e.target.closest('[data-del]'); if (!del) return;
+    const tr = del.closest('tr');
+    if (!confirm(`Премахване на „${tr.querySelector('b').textContent}“?`)) return;
+    try { await rpc('remove_user', { p_user: tr.dataset.u }); openUsers(); }
+    catch (err) { $('#uMsg').className = 'msg err'; $('#uMsg').textContent = err.message; }
+  };
+  if (!$('#dlg').open) $('#dlg').showModal();
+}
+$('#usersBtn').onclick = openUsers;
+$('#dlg').addEventListener('close', () => { $('#dlgBody').onchange = $('#dlgBody').onclick = null; });
+
+// ---------- Вход / нов потребител ----------
 function askLogin() {
   return new Promise(resolve => {
     const dlg = $('#loginDlg');
-    dlg.addEventListener('cancel', e => e.preventDefault()); // не може да се затвори без парола
+    let mode = 'login';
+    dlg.addEventListener('cancel', e => e.preventDefault()); // не може да се затвори без вход
+    $('#authTabs').onclick = e => {
+      const b = e.target.closest('[data-m]'); if (!b) return;
+      mode = b.dataset.m;
+      $('#authTabs').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      $('#pass2Box').hidden = mode !== 'register';
+      $('#loginPass2').required = mode === 'register';
+      $('#loginBtn').textContent = mode === 'register' ? 'Създай потребител' : 'Вход';
+      $('#authHint').textContent = mode === 'register'
+        ? 'Изберете си име и парола. Поръчващият ще ви одобри.'
+        : 'Въведете вашето име и парола.';
+      $('#loginMsg').textContent = '';
+    };
     $('#loginForm').onsubmit = async e => {
       e.preventDefault();
       const msg = $('#loginMsg');
+      const name = $('#loginName').value.trim().replace(/\s+/g, ' ');
+      const password = $('#loginPass').value;
+      if (name.length < 2) { msg.className = 'msg err'; msg.textContent = 'Въведете име.'; return; }
+      if (mode === 'register' && password !== $('#loginPass2').value) {
+        msg.className = 'msg err'; msg.textContent = 'Паролите не съвпадат.'; return;
+      }
       msg.className = 'msg'; msg.textContent = 'Проверка…';
-      const { error } = await sb.auth.signInWithPassword({ email: ROLES[ROLE].email, password: $('#loginPass').value });
+      const email = await nameToEmail(name);
+      let error;
+      if (mode === 'register') {
+        const res = await sb.auth.signUp({ email, password, options: { data: { name } } });
+        error = res.error;
+        if (!error && !res.data.session) {
+          msg.className = 'msg err';
+          msg.textContent = 'В Supabase трябва да се изключи „Confirm email“ (виж инструкцията).';
+          return;
+        }
+      } else {
+        error = (await sb.auth.signInWithPassword({ email, password })).error;
+      }
       if (error) {
         msg.className = 'msg err';
-        msg.textContent = /invalid/i.test(error.message) ? 'Грешна парола.' : failText(error);
+        msg.textContent = /already|registered|exists/i.test(error.message) ? 'Това име вече е заето – изберете друго или влезте.'
+          : /invalid/i.test(error.message) ? 'Грешно име или парола.'
+          : /password/i.test(error.message) ? 'Паролата трябва да е поне 6 знака.'
+          : failText(error);
         return;
       }
       dlg.close(); resolve();
     };
-    dlg.showModal(); $('#loginPass').focus();
+    dlg.showModal(); $('#loginName').focus();
   });
 }
-$('#role').onclick = async () => {
-  if (!confirm('Изход от този компютър? След това ще трябва паролата отново.')) return;
-  await sb.auth.signOut();
-  location.reload();
-};
+
+// Профилът на влезлия: име + роля. Без роля → чака одобрение.
+async function getProfile() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return null;
+  const { data } = await sb.from('app_users').select('*').eq('user_id', user.id).maybeSingle();
+  return data;
+}
+function waitApproval(profile) {
+  return new Promise(resolve => {
+    $('#waitName').textContent = profile?.name || '';
+    $('#waitDlg').addEventListener('cancel', e => e.preventDefault());
+    $('#waitOut').onclick = async () => { await sb.auth.signOut(); location.reload(); };
+    $('#waitAgain').onclick = async () => {
+      const p = await getProfile();
+      if (p?.role) { $('#waitDlg').close(); resolve(p); }
+      else { $('#waitMsg').className = 'msg err'; $('#waitMsg').textContent = 'Още не е одобрен.'; }
+    };
+    $('#waitDlg').showModal();
+  });
+}
 
 (async () => {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) await askLogin();
+  let profile = await getProfile();
+  if (!profile) { await sb.auth.signOut(); location.reload(); return; }
+  if (!profile.role) profile = await waitApproval(profile);
+
+  ROLE = profile.role;
+  myName = profile.name;
+  isOrderer = ROLE === 'glaven';
+  canSeeBoard = ROLE !== 'sluzhitel';
   document.body.classList.toggle('helper', ROLE === 'pomoshtnik');
   document.body.classList.toggle('staff', ROLE === 'sluzhitel');
   if (!canSeeBoard) {
@@ -700,15 +819,14 @@ $('#role').onclick = async () => {
     if (view === 'board') view = 'all';
   }
   $('#role').textContent = ROLES[ROLE].label;
-  showName();
+  $('#meName').textContent = myName;
   setView(view);
-
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session) await askLogin();
   connect();
-  if (!myName) askName();
-  // Главният сваля пълен архив веднъж на ден (в папка „Изтегляния“).
   if (isOrderer) {
+    $('#usersBtn').hidden = false;
+    loadUsers();
+    setInterval(loadUsers, 60_000); // нов служител чака одобрение → брояч на бутона
+    // Главният сваля пълен архив веднъж на ден (в папка „Изтегляния“).
     let last = '';
     try { last = localStorage.getItem('lastBackup') || ''; } catch {}
     if (last !== today()) setTimeout(() => backup(true), 5000);
