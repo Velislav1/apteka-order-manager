@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apteka Order Manager</title>
+<link rel="icon" href="icons/zayavki.ico">
+<meta name="theme-color" content="#0f7b5f">
+<style>
+  :root { --bg: #eef2f5; --panel: #fff; --text: #1b2631; --muted: #667483; --line: #dde3e9; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { margin: 0 0 6px; font-size: 28px; }
+  .sub { color: var(--muted); margin: 0 0 26px; }
+  .roles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  a.role { display: block; background: var(--panel); border-radius: 14px; padding: 20px; text-decoration: none; color: inherit;
+    border-top: 6px solid var(--c); box-shadow: 0 1px 3px rgba(16,24,40,.1); transition: transform .1s; }
+  a.role:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(16,24,40,.14); }
+  a.role img { width: 56px; height: 56px; border-radius: 12px; }
+  a.role h2 { margin: 10px 0 4px; font-size: 19px; color: var(--c); }
+  a.role p { margin: 0; color: var(--muted); font-size: 14px; }
+  .steps { background: var(--panel); border-radius: 14px; padding: 18px 22px; margin-top: 26px; box-shadow: 0 1px 3px rgba(16,24,40,.1); }
+  .steps h3 { margin: 0 0 8px; }
+  .steps ol { margin: 0; padding-left: 20px; }
+  .steps li { margin: 6px 0; }
+  @media (max-width: 700px) { .roles { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>💊 Apteka Order Manager</h1>
+  <p class="sub">Заявки за лекарства. Работи на всеки компютър, без значение дали главният е включен.</p>
+
+  <div class="roles">
+    <a class="role" href="glaven/" style="--c:#0f7b5f">
+      <img src="icons/icon-192.png" alt="">
+      <h2>Главен</h2>
+      <p>Компютърът на поръчващия. Вижда таблото и мести заявките.</p>
+    </a>
+    <a class="role" href="pomoshtnik/" style="--c:#6b46c1">
+      <img src="icons/icon-192-helper.png" alt="">
+      <h2>Помощник поръчващ</h2>
+      <p>Вижда таблото като главния, но не мести заявки.</p>
+    </a>
+    <a class="role" href="sluzhitel/" style="--c:#2563eb">
+      <img src="icons/icon-192-blue.png" alt="">
+      <h2>Служител</h2>
+      <p>Нова заявка, календар и всички заявки.</p>
+    </a>
+  </div>
+
+  <div class="steps">
+    <h3>Как се инсталира на компютър</h3>
+    <ol>
+      <li>Отворете тази страница в <b>Microsoft Edge</b> или <b>Google Chrome</b>.</li>
+      <li>Натиснете ролята на този компютър (Главен / Помощник / Служител).</li>
+      <li>Въведете паролата за ролята – пита се само веднъж.</li>
+      <li>Горе вдясно натиснете <b>„📥 Инсталирай на този компютър“</b>
+        (или иконата за инсталиране в адресната лента) → „Инсталиране“.
+        Появява се икона на работния плот.</li>
+    </ol>
+  </div>
+</main>
+</body>
+</html>
