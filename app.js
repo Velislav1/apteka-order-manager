@@ -768,10 +768,13 @@ function askLogin() {
       }
       if (error) {
         msg.className = 'msg err';
-        msg.textContent = /already|registered|exists/i.test(error.message) ? 'Това име вече е заето – изберете друго или влезте.'
-          : /invalid/i.test(error.message) ? 'Грешно име или парола.'
-          : /password/i.test(error.message) ? 'Паролата трябва да е поне 6 знака.'
-          : failText(error);
+        const code = error.code || '';
+        msg.textContent = code === 'user_already_exists' ? 'Това име вече е заето – изберете друго или влезте.'
+          : code === 'invalid_credentials' ? 'Грешно име или парола.'
+          : code === 'weak_password' ? 'Паролата трябва да е поне 6 знака.'
+          : code === 'email_not_confirmed' || code === 'email_address_invalid' || /confirm|sending/i.test(error.message)
+            ? 'В Supabase трябва да се изключи „Confirm email“ (Authentication → Sign In / Providers → Email).'
+          : `Грешка: ${failText(error)}`;
         return;
       }
       dlg.close(); resolve();
